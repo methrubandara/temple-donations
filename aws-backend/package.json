@@ -1,0 +1,28 @@
+{
+  "name": "nebvmc-donation-backend",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "cdk": "cdk",
+    "synth": "cdk synth",
+    "deploy": "cdk deploy"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.149",
+    "@types/node": "^22.15.21",
+    "aws-cdk": "^2.1017.0",
+    "esbuild": "^0.25.5",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.821.0",
+    "@aws-sdk/client-s3": "^3.821.0",
+    "@aws-sdk/lib-dynamodb": "^3.821.0",
+    "@aws-sdk/s3-request-presigner": "^3.821.0",
+    "aws-cdk-lib": "^2.197.0",
+    "constructs": "^10.4.2"
+  }
+}
