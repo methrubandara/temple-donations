@@ -29,13 +29,13 @@ npx cdk bootstrap
 ## Deploy
 
 ```bash
-npx cdk deploy --parameters AnthropicApiKey=YOUR_KEY
+npx cdk deploy --parameters AdminPin=2923 --parameters AnthropicApiKey=YOUR_KEY
 ```
 
 Or skip Anthropic key if you do not use extraction:
 
 ```bash
-npx cdk deploy
+npx cdk deploy --parameters AdminPin=2923
 ```
 
 After deploy, copy `ApiBaseUrl` output.
@@ -59,3 +59,14 @@ Then run/build frontend.
 - `DELETE /attachments/{donationId}`
 - `POST /extract` (optional, requires `AnthropicApiKey`)
 - `GET /health`
+
+Protected routes requiring `x-admin-pin` header:
+
+- `PUT /state`
+- `PUT /attachments/{donationId}`
+- `DELETE /attachments/{donationId}`
+- `POST /extract`
+
+Public route for account creation:
+
+- `POST /register`

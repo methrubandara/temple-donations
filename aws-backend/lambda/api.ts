@@ -1,4 +1,5 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from "aws-lambda";
+import { randomUUID } from "crypto";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { DeleteObjectCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
@@ -10,6 +11,7 @@ const STATE_TABLE_NAME = process.env.STATE_TABLE_NAME || "";
 const ATTACHMENTS_BUCKET_NAME = process.env.ATTACHMENTS_BUCKET_NAME || "";
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "*";
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
+const ADMIN_PIN = process.env.ADMIN_PIN || "";
 const STATE_PK = "GLOBAL_STATE";
 const EXTRACTION_PROMPT = `Extract donation/payment information from this document. This could be a check image, a Venmo payment screenshot, or a payment receipt PDF.
 
@@ -34,6 +36,7 @@ Rules:
 type AppState = {
   users: unknown[];
   donations: unknown[];
+  settings?: Record<string, unknown>;
 };
 
 function response(statusCode: number, body: unknown): APIGatewayProxyStructuredResultV2 {
@@ -58,6 +61,16 @@ function parseJsonBody(event: APIGatewayProxyEventV2): any {
   }
 }
 
+function getHeader(event: APIGatewayProxyEventV2, key: string): string {
+  return event.headers?.[key] || event.headers?.[key.toLowerCase()] || "";
+}
+
+function isAdminAuthorized(event: APIGatewayProxyEventV2): boolean {
+  if (!ADMIN_PIN) return false;
+  const pin = getHeader(event, "x-admin-pin");
+  return pin === ADMIN_PIN;
+}
+
 async function streamToString(stream: any): Promise<string> {
   const chunks: Buffer[] = [];
   for await (const chunk of stream) {
@@ -73,7 +86,7 @@ async function getState(): Promise<AppState> {
   }));
 
   const item = result.Item as { data?: AppState } | undefined;
-  return item?.data || { users: [], donations: [] };
+  return item?.data || { users: [], donations: [], settings: {} };
 }
 
 async function putState(state: AppState): Promise<void> {
@@ -83,7 +96,8 @@ async function putState(state: AppState): Promise<void> {
       pk: STATE_PK,
       data: {
         users: Array.isArray(state.users) ? state.users : [],
-        donations: Array.isArray(state.donations) ? state.donations : []
+        donations: Array.isArray(state.donations) ? state.donations : [],
+        settings: state.settings && typeof state.settings === "object" ? state.settings : {}
       },
       updatedAt: new Date().toISOString()
     }
@@ -130,9 +144,47 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     }
 
     if (method === "PUT" && path === "/state") {
+      if (!isAdminAuthorized(event)) {
+        return response(403, { error: "Admin authorization required" });
+      }
       const body = parseJsonBody(event);
-      await putState({ users: body.users || [], donations: body.donations || [] });
+      await putState({ users: body.users || [], donations: body.donations || [], settings: body.settings || {} });
       return response(200, { ok: true });
+    }
+
+    if (method === "POST" && path === "/register") {
+      const body = parseJsonBody(event);
+      const email = String(body.email || "").trim().toLowerCase();
+      const firstName = String(body.firstName || "").trim();
+      const lastName = String(body.lastName || "").trim();
+      const password = String(body.password || "");
+
+      if (!email || !firstName || !lastName || !password) {
+        return response(400, { error: "firstName, lastName, email, and password are required" });
+      }
+
+      const state = await getState();
+      const users = Array.isArray(state.users) ? state.users as any[] : [];
+      if (users.some((u) => String(u.email || "").toLowerCase() === email)) {
+        return response(409, { error: "Email already registered" });
+      }
+
+      const newUser = {
+        id: body.id || randomUUID(),
+        firstName,
+        lastName,
+        email,
+        phone: body.phone || "",
+        street: body.street || "",
+        city: body.city || "",
+        state: body.state || "",
+        zip: body.zip || "",
+        password,
+        role: "user"
+      };
+
+      await putState({ ...state, users: [...users, newUser] });
+      return response(201, { user: newUser });
     }
 
     if (method === "GET" && path === "/attachments") {
@@ -141,6 +193,9 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     }
 
     if (method === "POST" && path === "/extract") {
+      if (!isAdminAuthorized(event)) {
+        return response(403, { error: "Admin authorization required" });
+      }
       if (!ANTHROPIC_API_KEY) {
         return response(500, { error: "ANTHROPIC_API_KEY is not configured" });
       }
@@ -182,6 +237,9 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
 
     const attachmentMatch = path.match(/^\/attachments\/([^/]+)$/);
     if (attachmentMatch && method === "PUT") {
+      if (!isAdminAuthorized(event)) {
+        return response(403, { error: "Admin authorization required" });
+      }
       const donationId = decodeURIComponent(attachmentMatch[1]);
       const attachment = parseJsonBody(event);
       await s3.send(new PutObjectCommand({
@@ -194,6 +252,9 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     }
 
     if (attachmentMatch && method === "DELETE") {
+      if (!isAdminAuthorized(event)) {
+        return response(403, { error: "Admin authorization required" });
+      }
       const donationId = decodeURIComponent(attachmentMatch[1]);
       await s3.send(new DeleteObjectCommand({
         Bucket: ATTACHMENTS_BUCKET_NAME,

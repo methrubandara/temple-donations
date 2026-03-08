@@ -43,7 +43,7 @@ Deploy it:
 cd aws-backend
 npm install
 npx cdk bootstrap
-npx cdk deploy --parameters AnthropicApiKey=YOUR_KEY
+npx cdk deploy --parameters AdminPin=2923 --parameters AnthropicApiKey=YOUR_KEY
 ```
 
 Copy `ApiBaseUrl` from stack outputs and set in frontend `.env`:
@@ -51,6 +51,8 @@ Copy `ApiBaseUrl` from stack outputs and set in frontend `.env`:
 ```bash
 VITE_API_BASE_URL=https://YOUR_API_ID.execute-api.YOUR_REGION.amazonaws.com
 ```
+
+Important: `VITE_ADMIN_PIN` in frontend must match the deployed AWS `AdminPin` parameter.
 
 ## Deploy on Vercel
 

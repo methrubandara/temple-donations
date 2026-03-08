@@ -8,15 +8,49 @@ const ORG_NAME = "NEBV&MC";
 const FUND_NAME = "NEBV&MC New Building Fund";
 const ORG_EIN = "XX-XXXXXXX";
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+const DEFAULT_TAX_TEMPLATE = `NEW ENGLAND BUDDHIST VIHARA AND MEDITATION CENTER (NEBV & MC)
+162 Old Upton Road, Grafton MA 01519
+
+Non-profit Organization Registered in the Commonwealth of Massachusetts
+Employment Identification Number (EIN): 20-4066209
+President of the Board: Rev. Aluthgama Dhammajothi
+Telephone: 1-508-839-5038
+E-mail: information@nebvmc.org, aluthj@yahoo.com         Web: www.nebvmc.org
+
+Receipt for donations to NEBV & MC - {{YEAR}}
+
+Dear Dhamma Friends,
+This is to acknowledge with thanks, your generous monetary donations in support of New England Buddhist Vihara and Meditation Center. Our primary purpose is to create an environment for those who are interested in learning the Nobel teachings of the Lord Buddha and to create a place for meditation and community gathering. Our doors are open to all those interested in Buddhism and meditation.
+Your support is vital in continuing our regular religious services, community activities, children's services, meditation programs to name a few. We thank you for your generous support given throughout the years!
+May the Triple Gem be with you!
+
+Donor/Donors: {{DONOR_NAME}}
+Address: {{ADDRESS}}
+Total donation for {{YEAR}}: {{TOTAL_DONATION}}
+
+We confirm that your donations have been used for the purpose of furthering our charitable organization's mission and goals set out in the article VII, section 7.01 of the By Laws and article IV, section (c) of the Articles of Organization of the New England Buddhist Vihara and Meditation Center.
+Your donation is fully tax deductible.
+
+If you need a breakdown of your donation details, please inform us and we will provide it to you.
+PayPal donations show the fee deducted net value.
+
+Rev. Aluthgama Dhammajothi, President
+{{GENERATED_DATE}}`;
 
 const generateId = () => Math.random().toString(36).substr(2, 9);
 const formatCurrency = (amt) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(amt);
 const formatDate = (d) => new Date(d).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
 const hasRemoteApi = API_BASE_URL.length > 0;
 
+function getAdminPinHeader() {
+  const pin = window.sessionStorage.getItem("admin_pin") || "";
+  return pin ? { "x-admin-pin": pin } : {};
+}
+
 async function apiRequest(path, options = {}) {
+  const adminHeaders = options.admin ? getAdminPinHeader() : {};
   const response = await fetch(`${API_BASE_URL}${path}`, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    headers: { "Content-Type": "application/json", ...adminHeaders, ...(options.headers || {}) },
     ...options
   });
   if (!response.ok) throw new Error(`Request failed: ${response.status}`);
@@ -41,7 +75,7 @@ async function loadData() {
 async function saveData(data) {
   if (hasRemoteApi) {
     try {
-      await apiRequest("/state", { method: "PUT", body: JSON.stringify(data) });
+      await apiRequest("/state", { method: "PUT", body: JSON.stringify(data), admin: true });
     } catch {}
     return;
   }
@@ -67,7 +101,8 @@ async function saveAttachment(donationId, attachment) {
     try {
       await apiRequest(`/attachments/${encodeURIComponent(donationId)}`, {
         method: "PUT",
-        body: JSON.stringify(attachment)
+        body: JSON.stringify(attachment),
+        admin: true
       });
     } catch {}
     return;
@@ -81,7 +116,7 @@ async function saveAttachment(donationId, attachment) {
 async function deleteAttachment(donationId) {
   if (hasRemoteApi) {
     try {
-      await apiRequest(`/attachments/${encodeURIComponent(donationId)}`, { method: "DELETE" });
+      await apiRequest(`/attachments/${encodeURIComponent(donationId)}`, { method: "DELETE", admin: true });
     } catch {}
     return;
   }
@@ -92,14 +127,32 @@ async function deleteAttachment(donationId) {
   } catch {}
 }
 
+async function registerUserAccount(user) {
+  if (hasRemoteApi) {
+    const payload = { ...user, role: "user" };
+    await apiRequest("/register", { method: "POST", body: JSON.stringify(payload) });
+    return;
+  }
+}
+
 // Tax Letter Generator
-function generateTaxLetter(user, donations, year) {
+function generateTaxLetter(user, donations, year, templateText) {
   const yearDonations = donations.filter((d) => d.email === user.email && new Date(d.date).getFullYear() === year);
   const total = yearDonations.reduce((s, d) => s + d.amount, 0);
-  const today = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
-  let text = `${ORG_NAME} / ${FUND_NAME}\nDONATION RECEIPT / TAX LETTER\n${"═".repeat(50)}\n\nDate: ${today}\n\nDear ${user.firstName} ${user.lastName},\n\nThank you for your generous contributions during the year ${year}.\nBelow is a summary of your donations:\n\n${"─".repeat(50)}\nDate            Type        Amount\n${"─".repeat(50)}\n`;
-  yearDonations.forEach((d) => { text += `${formatDate(d.date).padEnd(16)}${d.type.padEnd(12)}${formatCurrency(d.amount)}\n`; });
-  text += `${"─".repeat(50)}\nTOTAL: ${formatCurrency(total)}\n${"─".repeat(50)}\n\nNo goods or services were provided in exchange for\nthese contributions.\n\nThis letter may be used for tax deduction purposes.\n\nWith gratitude,\n${ORG_NAME}\n${FUND_NAME}\nEIN: ${ORG_EIN}\n`;
+  const generatedDate = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+  const donorName = `${user.firstName || ""} ${user.lastName || ""}`.trim();
+  const donorAddress = [user.street, user.city, user.state, user.zip].filter(Boolean).join(", ");
+
+  const text = (templateText || DEFAULT_TAX_TEMPLATE)
+    .replaceAll("{{YEAR}}", String(year))
+    .replaceAll("{{DONOR_NAME}}", donorName || user.email || "")
+    .replaceAll("{{ADDRESS}}", donorAddress || "N/A")
+    .replaceAll("{{TOTAL_DONATION}}", formatCurrency(total))
+    .replaceAll("{{GENERATED_DATE}}", generatedDate)
+    .replaceAll("{{ORG_NAME}}", ORG_NAME)
+    .replaceAll("{{FUND_NAME}}", FUND_NAME)
+    .replaceAll("{{ORG_EIN}}", ORG_EIN);
+
   const blob = new Blob([text], { type: "text/plain" });
   const url = URL.createObjectURL(blob);
   const safeOrg = ORG_NAME.replace(/[^A-Za-z0-9]+/g, "_");
@@ -129,7 +182,7 @@ async function extractFromDocument(base64Data, mediaType, fileName) {
   const extractUrl = hasRemoteApi ? `${API_BASE_URL}/extract` : "/api/extract";
   const response = await fetch(extractUrl, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(hasRemoteApi ? getAdminPinHeader() : {}) },
     body: JSON.stringify({ base64Data, mediaType, fileName })
   });
 
@@ -557,10 +610,15 @@ function RegisterPage({ users, onRegister, onGoLogin }) {
     const match = users.find((u) => u.email.toLowerCase() === q || `${u.firstName} ${u.lastName}`.toLowerCase().includes(q));
     if (match) { setFound(match); setShowForm(false); } else { setFound(null); setShowForm(true); }
   };
-  const handleRegister = () => {
+  const handleRegister = async () => {
     if (!form.firstName || !form.lastName || !form.email || !form.password) { setError("Please fill in all required fields."); return; }
     if (users.find((u) => u.email === form.email)) { setError("This email is already registered."); return; }
-    onRegister({ ...form, id: generateId() }); setError("");
+    try {
+      await onRegister({ ...form, id: generateId() });
+      setError("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Registration failed.");
+    }
   };
   const f = (key) => ({ value: form[key], onChange: (e) => setForm({ ...form, [key]: e.target.value }) });
   return (
@@ -612,7 +670,7 @@ function RegisterPage({ users, onRegister, onGoLogin }) {
   );
 }
 
-function UserDashboard({ user, users, donations, onAddDonation, onLogout }) {
+function UserDashboard({ user, donations, settings, onLogout }) {
   const [tab, setTab] = useState("history");
   const [yearFilter, setYearFilter] = useState("all");
   const myDonations = donations.filter((d) => d.email === user.email).filter((d) => yearFilter === "all" || new Date(d.date).getFullYear() === parseInt(yearFilter)).sort((a, b) => new Date(b.date) - new Date(a.date));
@@ -633,7 +691,7 @@ function UserDashboard({ user, users, donations, onAddDonation, onLogout }) {
         <StatCard label="This Year" value={formatCurrency(donations.filter((d) => d.email === user.email && new Date(d.date).getFullYear() === new Date().getFullYear()).reduce((s, d) => s + d.amount, 0))} />
         <StatCard label="Donations" value={donations.filter((d) => d.email === user.email).length} />
       </div>
-      <Tabs tabs={[{ key: "history", label: "History" }, { key: "donate", label: "Add Donation" }, { key: "tax", label: "Tax Letter" }]} active={tab} onSelect={setTab} />
+      <Tabs tabs={[{ key: "history", label: "History" }, { key: "tax", label: "Tax Letter" }]} active={tab} onSelect={setTab} />
 
       {tab === "history" && (
         <div>
@@ -667,10 +725,6 @@ function UserDashboard({ user, users, donations, onAddDonation, onLogout }) {
         </div>
       )}
 
-      {tab === "donate" && (
-        <DonationForm users={users} defaultEmail={user.email} onAddDonation={onAddDonation} showDonorSelect={false} />
-      )}
-
       {tab === "tax" && (
         <div style={{ maxWidth: 480 }}>
           <div style={{ background: "#f4f6ef", borderRadius: 12, padding: 24 }}>
@@ -681,7 +735,7 @@ function UserDashboard({ user, users, donations, onAddDonation, onLogout }) {
                 {years.map((y) => {
                   const t = donations.filter((d) => d.email === user.email && new Date(d.date).getFullYear() === y).reduce((s, d) => s + d.amount, 0);
                   return (
-                    <button key={y} onClick={() => generateTaxLetter(user, donations, y)}
+                    <button key={y} onClick={() => generateTaxLetter(user, donations, y, settings.taxTemplate)}
                       style={{ display: "flex", flexDirection: "column", alignItems: "center", padding: "14px 22px", background: "#fff", border: "1.5px solid #d4d9cc", borderRadius: 10, cursor: "pointer", transition: "all 0.2s" }}
                       onMouseEnter={(e) => { e.currentTarget.style.borderColor = "#4a6741"; e.currentTarget.style.background = "#eef3ea"; }}
                       onMouseLeave={(e) => { e.currentTarget.style.borderColor = "#d4d9cc"; e.currentTarget.style.background = "#fff"; }}>
@@ -702,7 +756,7 @@ function UserDashboard({ user, users, donations, onAddDonation, onLogout }) {
 
 // ─── Admin Dashboard ───
 
-function AdminDashboard({ users, donations, onAddDonation, onDeleteDonation, onDeleteUser, onUpdateUser, onLogout }) {
+function AdminDashboard({ users, donations, settings, onAddDonation, onDeleteDonation, onUpdateDonation, onDeleteUser, onUpdateUser, onUpdateSettings, onLogout }) {
   const [tab, setTab] = useState("overview");
   const [success, setSuccess] = useState("");
   const [confirm, setConfirm] = useState(null);
@@ -712,6 +766,9 @@ function AdminDashboard({ users, donations, onAddDonation, onDeleteDonation, onD
   const [searchQ, setSearchQ] = useState("");
   const [editingUser, setEditingUser] = useState(null);
   const [editForm, setEditForm] = useState({});
+  const [editingDonation, setEditingDonation] = useState(null);
+  const [donEditForm, setDonEditForm] = useState({ date: "", type: "Cash", amount: "", checkNumber: "" });
+  const [templateDraft, setTemplateDraft] = useState(settings.taxTemplate || DEFAULT_TAX_TEMPLATE);
 
   const totalAmount = donations.reduce((s, d) => s + d.amount, 0);
   const thisYear = new Date().getFullYear();
@@ -745,6 +802,37 @@ function AdminDashboard({ users, donations, onAddDonation, onDeleteDonation, onD
     if (!editForm.firstName || !editForm.lastName || !editForm.email) return;
     onUpdateUser(editingUser, editForm);
     setEditingUser(null); setSuccess("User updated!"); setTimeout(() => setSuccess(""), 3000);
+  };
+
+  const startEditDonation = (donation) => {
+    setEditingDonation(donation.id);
+    setDonEditForm({
+      date: donation.date,
+      type: donation.type,
+      amount: String(donation.amount),
+      checkNumber: donation.checkNumber || ""
+    });
+  };
+
+  const saveEditDonation = () => {
+    const amount = parseFloat(donEditForm.amount);
+    if (!donEditForm.date || !donEditForm.type || !amount || amount <= 0) return;
+
+    onUpdateDonation(editingDonation, {
+      date: donEditForm.date,
+      type: donEditForm.type,
+      amount,
+      checkNumber: donEditForm.checkNumber
+    });
+    setEditingDonation(null);
+    setSuccess("Donation updated!");
+    setTimeout(() => setSuccess(""), 3000);
+  };
+
+  const saveTemplate = async () => {
+    await onUpdateSettings({ taxTemplate: templateDraft });
+    setSuccess("Tax letter template saved.");
+    setTimeout(() => setSuccess(""), 3000);
   };
 
   return (
@@ -920,21 +1008,58 @@ function AdminDashboard({ users, donations, onAddDonation, onDeleteDonation, onD
               <div style={{ overflowX: "auto" }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 700 }}>
                   <thead><tr style={{ background: "#f0f3ea" }}>
-                    {["Date", "Donor", "Type", "Ref", "Amount", "Receipt", ""].map((h) => <th key={h} style={{ padding: "10px 14px", textAlign: "left", fontFamily: "'DM Mono', monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: 1.5, color: "#6b7f6b", fontWeight: 500 }}>{h}</th>)}
+                    {["Date", "Donor", "Type", "Ref", "Amount", "Receipt", "Actions"].map((h) => <th key={h} style={{ padding: "10px 14px", textAlign: "left", fontFamily: "'DM Mono', monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: 1.5, color: "#6b7f6b", fontWeight: 500 }}>{h}</th>)}
                   </tr></thead>
                   <tbody>{filteredDonations.map((d, i) => {
                     const u = users.find((u) => u.email === d.email);
+                    const isEditingDonation = editingDonation === d.id;
                     return (
                       <tr key={d.id} style={{ borderTop: "1px solid #eef0e8", background: i % 2 === 0 ? "#fff" : "#fcfcf8" }}>
-                        <td style={{ padding: "10px 14px", color: "#2d3a2d" }}>{formatDate(d.date)}</td>
+                        <td style={{ padding: "10px 14px", color: "#2d3a2d" }}>
+                          {isEditingDonation ? (
+                            <input type="date" value={donEditForm.date} onChange={(e) => setDonEditForm({ ...donEditForm, date: e.target.value })}
+                              style={{ padding: "6px 8px", border: "1px solid #d4d9cc", borderRadius: 6, width: 130 }} />
+                          ) : formatDate(d.date)}
+                        </td>
                         <td style={{ padding: "10px 14px", fontWeight: 500 }}>{u ? `${u.firstName} ${u.lastName}` : d.email}</td>
-                        <td style={{ padding: "10px 14px" }}><Badge>{d.type}</Badge></td>
-                        <td style={{ padding: "10px 14px", color: "#8a9484" }}>{d.checkNumber ? `#${d.checkNumber}` : "—"}</td>
-                        <td style={{ padding: "10px 14px", fontFamily: "'Source Serif 4', Georgia, serif", fontWeight: 600 }}>{formatCurrency(d.amount)}</td>
+                        <td style={{ padding: "10px 14px" }}>
+                          {isEditingDonation ? (
+                            <select value={donEditForm.type} onChange={(e) => setDonEditForm({ ...donEditForm, type: e.target.value })}
+                              style={{ padding: "6px 8px", border: "1px solid #d4d9cc", borderRadius: 6 }}>
+                              {DONATION_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                            </select>
+                          ) : <Badge>{d.type}</Badge>}
+                        </td>
+                        <td style={{ padding: "10px 14px", color: "#8a9484" }}>
+                          {isEditingDonation ? (
+                            <input value={donEditForm.checkNumber} onChange={(e) => setDonEditForm({ ...donEditForm, checkNumber: e.target.value })}
+                              placeholder="Ref" style={{ padding: "6px 8px", border: "1px solid #d4d9cc", borderRadius: 6, width: 110 }} />
+                          ) : (d.checkNumber ? `#${d.checkNumber}` : "—")}
+                        </td>
+                        <td style={{ padding: "10px 14px", fontFamily: "'Source Serif 4', Georgia, serif", fontWeight: 600 }}>
+                          {isEditingDonation ? (
+                            <input type="number" min="0" step="0.01" value={donEditForm.amount}
+                              onChange={(e) => setDonEditForm({ ...donEditForm, amount: e.target.value })}
+                              style={{ padding: "6px 8px", border: "1px solid #d4d9cc", borderRadius: 6, width: 100 }} />
+                          ) : formatCurrency(d.amount)}
+                        </td>
                         <td style={{ padding: "10px 14px" }}><ReceiptButton donationId={d.id} hasAttachment={d.hasAttachment} /></td>
                         <td style={{ padding: "10px 14px" }}>
-                          <button onClick={() => setConfirm({ message: `Delete this ${formatCurrency(d.amount)} ${d.type} donation?`, action: () => { onDeleteDonation(d.id); deleteAttachment(d.id); } })}
-                            style={{ background: "none", border: "none", color: "#c97b5a", cursor: "pointer", fontSize: 12, fontFamily: "'DM Mono', monospace", padding: "4px 8px" }}>✕</button>
+                          {isEditingDonation ? (
+                            <div style={{ display: "flex", gap: 6 }}>
+                              <button onClick={saveEditDonation}
+                                style={{ background: "none", border: "none", color: "#4a6741", cursor: "pointer", fontSize: 12, fontFamily: "'DM Mono', monospace", padding: "4px 6px" }}>Save</button>
+                              <button onClick={() => setEditingDonation(null)}
+                                style={{ background: "none", border: "none", color: "#8a9484", cursor: "pointer", fontSize: 12, fontFamily: "'DM Mono', monospace", padding: "4px 6px" }}>Cancel</button>
+                            </div>
+                          ) : (
+                            <div style={{ display: "flex", gap: 6 }}>
+                              <button onClick={() => startEditDonation(d)}
+                                style={{ background: "none", border: "none", color: "#4a6741", cursor: "pointer", fontSize: 12, fontFamily: "'DM Mono', monospace", padding: "4px 6px" }}>Edit</button>
+                              <button onClick={() => setConfirm({ message: `Delete this ${formatCurrency(d.amount)} ${d.type} donation?`, action: () => { onDeleteDonation(d.id); deleteAttachment(d.id); } })}
+                                style={{ background: "none", border: "none", color: "#c97b5a", cursor: "pointer", fontSize: 12, fontFamily: "'DM Mono', monospace", padding: "4px 6px" }}>Delete</button>
+                            </div>
+                          )}
                         </td>
                       </tr>
                     );
@@ -966,10 +1091,23 @@ function AdminDashboard({ users, donations, onAddDonation, onDeleteDonation, onD
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 {allYears.length === 0 ? <p style={{ color: "#a0a89a", fontSize: 13 }}>No data yet.</p> : allYears.map((y) => (
                   <Button key={y} variant="secondary" onClick={() => {
-                    users.forEach((u) => { if (donations.some((d) => d.email === u.email && new Date(d.date).getFullYear() === y)) generateTaxLetter(u, donations, y); });
+                    users.forEach((u) => { if (donations.some((d) => d.email === u.email && new Date(d.date).getFullYear() === y)) generateTaxLetter(u, donations, y, settings.taxTemplate); });
                   }} style={{ padding: "8px 16px" }}>{y}</Button>
                 ))}
               </div>
+            </div>
+          </div>
+
+          <div style={{ background: "#fafaf6", borderRadius: 12, padding: 24, border: "1px solid #e8eae2", marginBottom: 20 }}>
+            <p style={{ margin: "0 0 8px", fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#6b7f6b", textTransform: "uppercase", letterSpacing: 1.5 }}>Tax Letter Template</p>
+            <p style={{ margin: "0 0 12px", fontSize: 13, color: "#6b7f6b", lineHeight: 1.5 }}>
+              Available placeholders: {"{{YEAR}}"}, {"{{DONOR_NAME}}"}, {"{{ADDRESS}}"}, {"{{TOTAL_DONATION}}"}, {"{{GENERATED_DATE}}"}
+            </p>
+            <textarea value={templateDraft} onChange={(e) => setTemplateDraft(e.target.value)}
+              style={{ width: "100%", minHeight: 260, padding: "12px", border: "1.5px solid #d4d9cc", borderRadius: 8, fontSize: 13, fontFamily: "'DM Mono', monospace", background: "#fff", color: "#2d3a2d", boxSizing: "border-box" }} />
+            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+              <Button onClick={saveTemplate}>Save Template</Button>
+              <Button variant="secondary" onClick={() => setTemplateDraft(DEFAULT_TAX_TEMPLATE)}>Reset to Default</Button>
             </div>
           </div>
 
@@ -1009,6 +1147,7 @@ function AdminDashboard({ users, donations, onAddDonation, onDeleteDonation, onD
 export default function App() {
   const [users, setUsers] = useState([]);
   const [donations, setDonations] = useState([]);
+  const [settings, setSettings] = useState({ taxTemplate: DEFAULT_TAX_TEMPLATE });
   const [currentUser, setCurrentUser] = useState(null);
   const [page, setPage] = useState("login");
   const [loaded, setLoaded] = useState(false);
@@ -1019,30 +1158,50 @@ export default function App() {
   useEffect(() => {
     loadData()
       .then((data) => {
-        if (data) { setUsers(data.users || []); setDonations(data.donations || []); }
+        if (data) {
+          setUsers(data.users || []);
+          setDonations(data.donations || []);
+          setSettings({ taxTemplate: data.settings?.taxTemplate || DEFAULT_TAX_TEMPLATE });
+        }
       })
       .finally(() => setLoaded(true));
   }, []);
 
-  const persist = useCallback(async (u, d) => {
-    await saveData({ users: u, donations: d });
+  const persist = useCallback(async (u, d, s) => {
+    await saveData({ users: u, donations: d, settings: s });
   }, []);
 
   const handleRegister = async (user) => {
+    if (hasRemoteApi) {
+      await registerUserAccount(user);
+      const fresh = await loadData();
+      const nextUsers = fresh?.users || [];
+      setUsers(nextUsers);
+      const registered = nextUsers.find((u) => u.email === user.email);
+      if (registered) setCurrentUser(registered);
+      setPage("dashboard");
+      return;
+    }
+
     const next = [...users, user];
     setUsers(next);
-    await persist(next, donations);
+    await persist(next, donations, settings);
     setCurrentUser(user); setPage("dashboard");
   };
   const handleAddDonation = async (don) => {
     const next = [...donations, don];
     setDonations(next);
-    await persist(users, next);
+    await persist(users, next, settings);
   };
   const handleDeleteDonation = async (id) => {
     const next = donations.filter((d) => d.id !== id);
     setDonations(next);
-    await persist(users, next);
+    await persist(users, next, settings);
+  };
+  const handleUpdateDonation = async (id, updates) => {
+    const next = donations.map((d) => (d.id === id ? { ...d, ...updates } : d));
+    setDonations(next);
+    await persist(users, next, settings);
   };
   const handleDeleteUser = async (id) => {
     const user = users.find((u) => u.id === id);
@@ -1050,7 +1209,7 @@ export default function App() {
     const nextDons = user ? donations.filter((d) => d.email !== user.email) : donations;
     setUsers(nextUsers);
     setDonations(nextDons);
-    await persist(nextUsers, nextDons);
+    await persist(nextUsers, nextDons, settings);
   };
   const handleUpdateUser = async (id, updates) => {
     const existing = users.find((u) => u.id === id);
@@ -1064,13 +1223,29 @@ export default function App() {
 
     setUsers(nextUsers);
     setDonations(nextDons);
-    await persist(nextUsers, nextDons);
+    await persist(nextUsers, nextDons, settings);
+  };
+  const handleUpdateSettings = async (updates) => {
+    const next = { ...settings, ...updates };
+    setSettings(next);
+    await persist(users, donations, next);
   };
   const handleLogin = (user) => { setCurrentUser(user); setPage("dashboard"); };
-  const handleLogout = () => { setCurrentUser(null); setPage("login"); };
+  const handleLogout = () => {
+    window.sessionStorage.removeItem("admin_pin");
+    setCurrentUser(null);
+    setPage("login");
+  };
   const handleAdminLogin = () => {
-    if (adminPin === ADMIN_PIN) { setPage("admin"); setShowAdminPrompt(false); setAdminPin(""); setAdminError(""); }
+    if (adminPin === ADMIN_PIN) {
+      window.sessionStorage.setItem("admin_pin", adminPin);
+      setPage("admin"); setShowAdminPrompt(false); setAdminPin(""); setAdminError("");
+    }
     else setAdminError("Incorrect PIN.");
+  };
+  const handleAdminLogout = () => {
+    window.sessionStorage.removeItem("admin_pin");
+    setPage("login");
   };
 
   if (!loaded) return (
@@ -1122,12 +1297,12 @@ export default function App() {
         <div style={{ maxWidth: page === "admin" ? 900 : 720, margin: "0 auto", padding: "40px 24px", transition: "max-width 0.3s" }}>
           {page === "login" && <LoginPage users={users} onLogin={handleLogin} onGoRegister={() => setPage("register")} />}
           {page === "register" && <RegisterPage users={users} onRegister={handleRegister} onGoLogin={() => setPage("login")} />}
-          {page === "dashboard" && <UserDashboard user={currentUser} users={users} donations={donations} onAddDonation={handleAddDonation} onLogout={handleLogout} />}
+          {page === "dashboard" && <UserDashboard user={currentUser} donations={donations} settings={settings} onLogout={handleLogout} />}
           {page === "admin" && (
-            <AdminDashboard users={users} donations={donations}
-              onAddDonation={handleAddDonation} onDeleteDonation={handleDeleteDonation}
-              onDeleteUser={handleDeleteUser} onUpdateUser={handleUpdateUser}
-              onLogout={() => setPage("login")} />
+            <AdminDashboard users={users} donations={donations} settings={settings}
+              onAddDonation={handleAddDonation} onDeleteDonation={handleDeleteDonation} onUpdateDonation={handleUpdateDonation}
+              onDeleteUser={handleDeleteUser} onUpdateUser={handleUpdateUser} onUpdateSettings={handleUpdateSettings}
+              onLogout={handleAdminLogout} />
           )}
         </div>
       </div>

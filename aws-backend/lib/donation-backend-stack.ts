@@ -20,6 +20,12 @@ export class DonationBackendStack extends cdk.Stack {
       default: "",
       description: "Anthropic API key for document extraction endpoint (/extract). Optional."
     });
+    const adminPin = new cdk.CfnParameter(this, "AdminPin", {
+      type: "String",
+      noEcho: true,
+      default: "",
+      description: "Admin PIN required for protected API mutations."
+    });
 
     const stateTable = new dynamodb.Table(this, "DonationStateTable", {
       partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
@@ -51,7 +57,8 @@ export class DonationBackendStack extends cdk.Stack {
         STATE_TABLE_NAME: stateTable.tableName,
         ATTACHMENTS_BUCKET_NAME: attachmentsBucket.bucketName,
         ALLOWED_ORIGIN: props.allowedOrigin,
-        ANTHROPIC_API_KEY: anthropicApiKey.valueAsString
+        ANTHROPIC_API_KEY: anthropicApiKey.valueAsString,
+        ADMIN_PIN: adminPin.valueAsString
       }
     });
 
