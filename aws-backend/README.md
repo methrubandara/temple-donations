@@ -29,13 +29,20 @@ npx cdk bootstrap
 ## Deploy
 
 ```bash
-npx cdk deploy --parameters AdminPin=2923 --parameters AnthropicApiKey=YOUR_KEY
+npx cdk deploy \
+  --parameters AdminUsername=admin \
+  --parameters AdminPassword=your_strong_password \
+  --parameters AdminSessionSecret=your_long_random_secret \
+  --parameters AnthropicApiKey=YOUR_KEY
 ```
 
 Or skip Anthropic key if you do not use extraction:
 
 ```bash
-npx cdk deploy --parameters AdminPin=2923
+npx cdk deploy \
+  --parameters AdminUsername=admin \
+  --parameters AdminPassword=your_strong_password \
+  --parameters AdminSessionSecret=your_long_random_secret
 ```
 
 After deploy, copy `ApiBaseUrl` output.
@@ -60,7 +67,7 @@ Then run/build frontend.
 - `POST /extract` (optional, requires `AnthropicApiKey`)
 - `GET /health`
 
-Protected routes requiring `x-admin-pin` header:
+Protected routes requiring admin bearer token:
 
 - `PUT /state`
 - `PUT /attachments/{donationId}`
@@ -70,3 +77,4 @@ Protected routes requiring `x-admin-pin` header:
 Public route for account creation:
 
 - `POST /register`
+- `POST /admin/login`

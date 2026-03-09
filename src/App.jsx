@@ -38,17 +38,40 @@ Rev. Aluthgama Dhammajothi, President
 {{GENERATED_DATE}}`;
 
 const generateId = () => Math.random().toString(36).substr(2, 9);
+const normalizeEmail = (value) => String(value || "").trim().toLowerCase();
+const normalizePhone = (value) => String(value || "").replace(/[^\d+]/g, "").trim();
+const makeUserKey = (user) => normalizeEmail(user.email) || (normalizePhone(user.phone) ? `phone:${normalizePhone(user.phone)}` : `id:${user.id || generateId()}`);
+const getUserKey = (user) => user.email || `id:${user.id}`;
+const displayUserContact = (user) => {
+  const email = normalizeEmail(user.email);
+  const showEmail = email && !email.startsWith("id:") && !email.startsWith("phone:");
+  const phone = normalizePhone(user.phone);
+  if (showEmail && phone) return `${email} · ${phone}`;
+  if (showEmail) return email;
+  if (phone) return phone;
+  return "No contact on file";
+};
+const findUserByIdentifier = (users, identifier, password) => {
+  const q = String(identifier || "").trim().toLowerCase();
+  const phoneQ = normalizePhone(identifier);
+  return users.find((u) => {
+    if (u.password !== password) return false;
+    const email = normalizeEmail(u.email);
+    const phone = normalizePhone(u.phone);
+    return email === q || phone === phoneQ;
+  });
+};
 const formatCurrency = (amt) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(amt);
 const formatDate = (d) => new Date(d).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
 const hasRemoteApi = API_BASE_URL.length > 0;
 
-function getAdminPinHeader() {
-  const pin = window.sessionStorage.getItem("admin_pin") || "";
-  return pin ? { "x-admin-pin": pin } : {};
+function getAdminAuthHeader() {
+  const token = window.sessionStorage.getItem("admin_token") || "";
+  return token ? { authorization: `Bearer ${token}` } : {};
 }
 
 async function apiRequest(path, options = {}) {
-  const adminHeaders = options.admin ? getAdminPinHeader() : {};
+  const adminHeaders = options.admin ? getAdminAuthHeader() : {};
   const response = await fetch(`${API_BASE_URL}${path}`, {
     headers: { "Content-Type": "application/json", ...adminHeaders, ...(options.headers || {}) },
     ...options
@@ -128,9 +151,14 @@ async function deleteAttachment(donationId) {
 }
 
 async function registerUserAccount(user) {
+  const normalized = {
+    ...user,
+    email: makeUserKey(user),
+    phone: normalizePhone(user.phone),
+    role: "user"
+  };
   if (hasRemoteApi) {
-    const payload = { ...user, role: "user" };
-    await apiRequest("/register", { method: "POST", body: JSON.stringify(payload) });
+    await apiRequest("/register", { method: "POST", body: JSON.stringify(normalized) });
     return;
   }
 }
@@ -161,11 +189,11 @@ function generateTaxLetter(user, donations, year, templateText) {
 }
 
 function generateCSVExport(users, donations) {
-  let csv = "Date,Donor Name,Email,Type,Reference,Amount,Has Receipt\n";
+  let csv = "Date,Donor Name,Contact,Type,Reference,Amount,Has Receipt\n";
   [...donations].sort((a, b) => new Date(b.date) - new Date(a.date)).forEach((d) => {
     const u = users.find((u) => u.email === d.email);
     const name = u ? `${u.firstName} ${u.lastName}` : d.email;
-    csv += `${d.date},"${name}",${d.email},${d.type},${d.checkNumber || ""},${d.amount},${d.hasAttachment ? "Yes" : "No"}\n`;
+    csv += `${d.date},"${name}","${u ? displayUserContact(u) : d.email}",${d.type},${d.checkNumber || ""},${d.amount},${d.hasAttachment ? "Yes" : "No"}\n`;
   });
   const blob = new Blob([csv], { type: "text/csv" });
   const url = URL.createObjectURL(blob);
@@ -182,7 +210,7 @@ async function extractFromDocument(base64Data, mediaType, fileName) {
   const extractUrl = hasRemoteApi ? `${API_BASE_URL}/extract` : "/api/extract";
   const response = await fetch(extractUrl, {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...(hasRemoteApi ? getAdminPinHeader() : {}) },
+    headers: { "Content-Type": "application/json", ...(hasRemoteApi ? getAdminAuthHeader() : {}) },
     body: JSON.stringify({ base64Data, mediaType, fileName })
   });
 
@@ -497,7 +525,7 @@ function DonationForm({ users, defaultEmail, onAddDonation, showDonorSelect }) {
     if (result.payerName && showDonorSelect) {
       const name = result.payerName.toLowerCase();
       const match = users.find((u) => `${u.firstName} ${u.lastName}`.toLowerCase().includes(name) || name.includes(u.firstName.toLowerCase()));
-      if (match) setDonForm((prev) => ({ ...prev, email: match.email }));
+      if (match) setDonForm((prev) => ({ ...prev, email: getUserKey(match) }));
     }
   };
 
@@ -536,7 +564,7 @@ function DonationForm({ users, defaultEmail, onAddDonation, showDonorSelect }) {
 
       {showDonorSelect && (
         <SelectField label="Donor" required value={donForm.email} onChange={(e) => setDonForm({ ...donForm, email: e.target.value })}>
-          {users.map((u) => <option key={u.id} value={u.email}>{u.firstName} {u.lastName} ({u.email})</option>)}
+          {users.map((u) => <option key={u.id} value={getUserKey(u)}>{u.firstName} {u.lastName} ({displayUserContact(u)})</option>)}
         </SelectField>
       )}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 16px" }}>
@@ -573,12 +601,12 @@ function ReceiptButton({ donationId, hasAttachment }) {
 // ─── User Pages ───
 
 function LoginPage({ users, onLogin, onGoRegister }) {
-  const [email, setEmail] = useState("");
+  const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const handleLogin = () => {
-    const user = users.find((u) => u.email === email && u.password === password);
-    if (user) { onLogin(user); setError(""); } else setError("Invalid email or password.");
+    const user = findUserByIdentifier(users, identifier, password);
+    if (user) { onLogin(user); setError(""); } else setError("Invalid email/phone or password.");
   };
   return (
     <div style={{ maxWidth: 400, margin: "0 auto" }}>
@@ -588,7 +616,7 @@ function LoginPage({ users, onLogin, onGoRegister }) {
         <p style={{ color: "#8a9484", fontSize: 14, margin: "8px 0 0" }}>Sign in to manage donations, including the {FUND_NAME}</p>
       </div>
       {error && <div style={{ background: "#fdf0ea", color: "#c97b5a", padding: "10px 14px", borderRadius: 8, fontSize: 13, marginBottom: 16 }}>{error}</div>}
-      <Input label="Email" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@email.com" />
+      <Input label="Email or Phone" required value={identifier} onChange={(e) => setIdentifier(e.target.value)} placeholder="you@email.com or +15085551234" />
       <Input label="Password" type="password" required value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
       <Button onClick={handleLogin} style={{ width: "100%", marginTop: 8 }}>Sign In</Button>
       <p style={{ textAlign: "center", marginTop: 20, fontSize: 13, color: "#8a9484" }}>
@@ -604,17 +632,62 @@ function RegisterPage({ users, onRegister, onGoLogin }) {
   const [form, setForm] = useState({ firstName: "", lastName: "", phone: "", email: "", street: "", city: "", state: "", zip: "", password: "" });
   const [found, setFound] = useState(null);
   const [showForm, setShowForm] = useState(false);
+  const [claimMode, setClaimMode] = useState(false);
   const [error, setError] = useState("");
   const handleSearch = () => {
     const q = search.toLowerCase().trim();
-    const match = users.find((u) => u.email.toLowerCase() === q || `${u.firstName} ${u.lastName}`.toLowerCase().includes(q));
-    if (match) { setFound(match); setShowForm(false); } else { setFound(null); setShowForm(true); }
+    const phoneQ = normalizePhone(search);
+    if (!q && !phoneQ) return;
+    const match = users.find((u) => {
+      const fullName = `${u.firstName} ${u.lastName}`.toLowerCase();
+      return fullName.includes(q) || normalizeEmail(u.email) === q || normalizePhone(u.phone) === phoneQ;
+    });
+    if (match) {
+      setFound(match);
+      if (!match.password) {
+        setClaimMode(true);
+        setShowForm(true);
+        setForm({
+          firstName: match.firstName || "",
+          lastName: match.lastName || "",
+          phone: match.phone || "",
+          email: (match.email || "").startsWith("id:") || (match.email || "").startsWith("phone:") ? "" : (match.email || ""),
+          street: match.street || "",
+          city: match.city || "",
+          state: match.state || "",
+          zip: match.zip || "",
+          password: ""
+        });
+      } else {
+        setClaimMode(false);
+        setShowForm(false);
+      }
+    } else {
+      setFound(null);
+      setClaimMode(false);
+      setShowForm(true);
+    }
   };
   const handleRegister = async () => {
-    if (!form.firstName || !form.lastName || !form.email || !form.password) { setError("Please fill in all required fields."); return; }
-    if (users.find((u) => u.email === form.email)) { setError("This email is already registered."); return; }
+    if (!form.firstName || !form.lastName || !form.password) { setError("Please fill in name and password."); return; }
+    const email = normalizeEmail(form.email);
+    const phone = normalizePhone(form.phone);
+    if (!email && !phone) { setError("Provide at least an email or phone number."); return; }
+
+    const currentId = claimMode && found ? found.id : null;
+    if (email && users.some((u) => u.id !== currentId && normalizeEmail(u.email) === email)) { setError("This email is already registered."); return; }
+    if (phone && users.some((u) => u.id !== currentId && normalizePhone(u.phone) === phone)) { setError("This phone number is already registered."); return; }
+
+    const id = currentId || generateId();
+    const payload = {
+      ...form,
+      id,
+      email: makeUserKey({ ...form, id }),
+      phone,
+      role: "user"
+    };
     try {
-      await onRegister({ ...form, id: generateId() });
+      await onRegister(payload);
       setError("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Registration failed.");
@@ -629,29 +702,33 @@ function RegisterPage({ users, onRegister, onGoLogin }) {
         <p style={{ color: "#8a9484", fontSize: 14, margin: "8px 0 0" }}>Check if you're already in our system</p>
       </div>
       <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
-        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by name or email..."
+        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by name, email, or phone..."
           style={{ flex: 1, padding: "10px 14px", border: "1.5px solid #d4d9cc", borderRadius: 8, fontSize: 14, fontFamily: "'Source Serif 4', Georgia, serif", background: "#fafaf6", color: "#2d3a2d", outline: "none" }}
           onKeyDown={(e) => e.key === "Enter" && handleSearch()} />
         <Button onClick={handleSearch}>Search</Button>
       </div>
       {found && (
         <div style={{ background: "#eef3ea", borderRadius: 10, padding: 20, marginBottom: 20 }}>
-          <p style={{ margin: 0, fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#6b7f6b", textTransform: "uppercase", letterSpacing: 1 }}>Account Found</p>
+          <p style={{ margin: 0, fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#6b7f6b", textTransform: "uppercase", letterSpacing: 1 }}>{found.password ? "Account Found" : "Donor Found"}</p>
           <p style={{ margin: "8px 0 4px", fontSize: 18, fontFamily: "'Source Serif 4', Georgia, serif", color: "#2d3a2d", fontWeight: 600 }}>{found.firstName} {found.lastName}</p>
-          <p style={{ margin: 0, color: "#6b7f6b", fontSize: 13 }}>{found.email}</p>
-          <Button onClick={onGoLogin} variant="secondary" style={{ marginTop: 14 }}>Go to Login</Button>
+          <p style={{ margin: 0, color: "#6b7f6b", fontSize: 13 }}>{displayUserContact(found)}</p>
+          {found.password ? (
+            <Button onClick={onGoLogin} variant="secondary" style={{ marginTop: 14 }}>Go to Login</Button>
+          ) : (
+            <p style={{ margin: "10px 0 0", color: "#4a6741", fontSize: 13 }}>This donor record has no account yet. Complete the form below to create one.</p>
+          )}
         </div>
       )}
       {showForm && (
         <div style={{ background: "#fafaf6", borderRadius: 12, padding: 24, border: "1px solid #e8eae2" }}>
-          <p style={{ margin: "0 0 20px", fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#6b7f6b", textTransform: "uppercase", letterSpacing: 1 }}>New Registration</p>
+          <p style={{ margin: "0 0 20px", fontFamily: "'DM Mono', monospace", fontSize: 12, color: "#6b7f6b", textTransform: "uppercase", letterSpacing: 1 }}>{claimMode ? "Create Account For Existing Donor" : "New Registration"}</p>
           {error && <div style={{ background: "#fdf0ea", color: "#c97b5a", padding: "10px 14px", borderRadius: 8, fontSize: 13, marginBottom: 16 }}>{error}</div>}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 16px" }}>
             <Input label="First Name" required {...f("firstName")} />
             <Input label="Last Name" required {...f("lastName")} />
           </div>
-          <Input label="Contact Number" {...f("phone")} placeholder="Optional" />
-          <Input label="Email" type="email" required {...f("email")} />
+          <Input label="Contact Number" {...f("phone")} placeholder="Required if no email" />
+          <Input label="Email" type="email" {...f("email")} placeholder="Required if no phone" />
           <Input label="Street Address" {...f("street")} />
           <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: "0 12px" }}>
             <Input label="City" {...f("city")} />
@@ -659,7 +736,7 @@ function RegisterPage({ users, onRegister, onGoLogin }) {
             <Input label="Zip Code" {...f("zip")} />
           </div>
           <Input label="Password" type="password" required {...f("password")} />
-          <Button onClick={handleRegister} style={{ width: "100%", marginTop: 4 }}>Create Account</Button>
+          <Button onClick={handleRegister} style={{ width: "100%", marginTop: 4 }}>{claimMode ? "Activate Account" : "Create Account"}</Button>
         </div>
       )}
       <p style={{ textAlign: "center", marginTop: 20, fontSize: 13, color: "#8a9484" }}>
@@ -769,6 +846,8 @@ function AdminDashboard({ users, donations, settings, onAddDonation, onDeleteDon
   const [editingDonation, setEditingDonation] = useState(null);
   const [donEditForm, setDonEditForm] = useState({ date: "", type: "Cash", amount: "", checkNumber: "" });
   const [templateDraft, setTemplateDraft] = useState(settings.taxTemplate || DEFAULT_TAX_TEMPLATE);
+  const [newUserForm, setNewUserForm] = useState({ firstName: "", lastName: "", phone: "", email: "", street: "", city: "", state: "", zip: "" });
+  const [bulkNames, setBulkNames] = useState("");
 
   const totalAmount = donations.reduce((s, d) => s + d.amount, 0);
   const thisYear = new Date().getFullYear();
@@ -790,7 +869,7 @@ function AdminDashboard({ users, donations, settings, onAddDonation, onDeleteDon
   const filteredUsers = users.filter((u) => {
     if (!searchQ) return true;
     const q = searchQ.toLowerCase();
-    return `${u.firstName} ${u.lastName}`.toLowerCase().includes(q) || u.email.toLowerCase().includes(q);
+    return `${u.firstName} ${u.lastName}`.toLowerCase().includes(q) || normalizeEmail(u.email).includes(q) || normalizePhone(u.phone).includes(normalizePhone(searchQ));
   });
 
   const startEditUser = (u) => {
@@ -799,8 +878,9 @@ function AdminDashboard({ users, donations, settings, onAddDonation, onDeleteDon
   };
 
   const saveEditUser = () => {
-    if (!editForm.firstName || !editForm.lastName || !editForm.email) return;
-    onUpdateUser(editingUser, editForm);
+    if (!editForm.firstName || !editForm.lastName) return;
+    if (!normalizeEmail(editForm.email) && !normalizePhone(editForm.phone)) return;
+    onUpdateUser(editingUser, { ...editForm, phone: normalizePhone(editForm.phone) });
     setEditingUser(null); setSuccess("User updated!"); setTimeout(() => setSuccess(""), 3000);
   };
 
@@ -832,6 +912,61 @@ function AdminDashboard({ users, donations, settings, onAddDonation, onDeleteDon
   const saveTemplate = async () => {
     await onUpdateSettings({ taxTemplate: templateDraft });
     setSuccess("Tax letter template saved.");
+    setTimeout(() => setSuccess(""), 3000);
+  };
+
+  const addSingleUser = async () => {
+    const firstName = String(newUserForm.firstName || "").trim();
+    const lastName = String(newUserForm.lastName || "").trim();
+    if (!firstName || !lastName) return;
+
+    const id = generateId();
+    const user = {
+      ...newUserForm,
+      id,
+      phone: normalizePhone(newUserForm.phone),
+      email: makeUserKey({ ...newUserForm, id }),
+      password: ""
+    };
+    await onUpdateUser(null, user, true);
+    setNewUserForm({ firstName: "", lastName: "", phone: "", email: "", street: "", city: "", state: "", zip: "" });
+    setSuccess("Donor added.");
+    setTimeout(() => setSuccess(""), 3000);
+  };
+
+  const addBulkUsers = async () => {
+    const lines = bulkNames.split("\n").map((l) => l.trim()).filter(Boolean);
+    if (lines.length === 0) return;
+
+    const toCreate = [];
+    for (const line of lines) {
+      const parts = line.split(",").map((p) => p.trim());
+      const fullName = parts[0] || "";
+      if (!fullName) continue;
+      const nameParts = fullName.split(/\s+/).filter(Boolean);
+      const firstName = nameParts[0] || "";
+      const lastName = nameParts.slice(1).join(" ") || "(No last name)";
+      const phone = parts[1] || "";
+      const email = parts[2] || "";
+      const id = generateId();
+      toCreate.push({
+        id,
+        firstName,
+        lastName,
+        phone: normalizePhone(phone),
+        email: makeUserKey({ id, email, phone }),
+        street: "",
+        city: "",
+        state: "",
+        zip: "",
+        password: ""
+      });
+    }
+
+    if (toCreate.length === 0) return;
+    await onUpdateUser(null, toCreate, true);
+    setBulkNames("");
+    setSuccess(`${toCreate.length} donors added.`);
     setTimeout(() => setSuccess(""), 3000);
   };
 
@@ -901,7 +1036,7 @@ function AdminDashboard({ users, donations, settings, onAddDonation, onDeleteDon
                         <span style={{ width: 24, height: 24, borderRadius: "50%", background: i < 3 ? "#4a6741" : "#d4d9cc", color: i < 3 ? "#fff" : "#6b7f6b", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontFamily: "'DM Mono', monospace", fontWeight: 600 }}>{i + 1}</span>
                         <div>
                           <p style={{ margin: 0, fontSize: 14, fontWeight: 500 }}>{u.firstName} {u.lastName}</p>
-                          <p style={{ margin: 0, fontSize: 12, color: "#8a9484" }}>{u.email}</p>
+                          <p style={{ margin: 0, fontSize: 12, color: "#8a9484" }}>{displayUserContact(u)}</p>
                         </div>
                       </div>
                       <span style={{ fontFamily: "'Source Serif 4', Georgia, serif", fontWeight: 700, fontSize: 15, color: "#2d3a2d" }}>{formatCurrency(u.total)}</span>
@@ -916,8 +1051,34 @@ function AdminDashboard({ users, donations, settings, onAddDonation, onDeleteDon
       {/* Users Tab */}
       {tab === "users" && (
         <div>
+          <div style={{ background: "#fafaf6", borderRadius: 12, padding: 20, border: "1px solid #e8eae2", marginBottom: 16 }}>
+            <p style={{ margin: "0 0 12px", fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#6b7f6b", textTransform: "uppercase", letterSpacing: 1.5 }}>Add Donors</p>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginBottom: 10 }}>
+              <input placeholder="First Name" value={newUserForm.firstName} onChange={(e) => setNewUserForm({ ...newUserForm, firstName: e.target.value })}
+                style={{ padding: "9px 10px", border: "1px solid #d4d9cc", borderRadius: 7, fontSize: 13 }} />
+              <input placeholder="Last Name" value={newUserForm.lastName} onChange={(e) => setNewUserForm({ ...newUserForm, lastName: e.target.value })}
+                style={{ padding: "9px 10px", border: "1px solid #d4d9cc", borderRadius: 7, fontSize: 13 }} />
+              <input placeholder="Phone (optional)" value={newUserForm.phone} onChange={(e) => setNewUserForm({ ...newUserForm, phone: e.target.value })}
+                style={{ padding: "9px 10px", border: "1px solid #d4d9cc", borderRadius: 7, fontSize: 13 }} />
+              <input placeholder="Email (optional)" value={newUserForm.email} onChange={(e) => setNewUserForm({ ...newUserForm, email: e.target.value })}
+                style={{ padding: "9px 10px", border: "1px solid #d4d9cc", borderRadius: 7, fontSize: 13 }} />
+            </div>
+            <Button onClick={addSingleUser} style={{ padding: "8px 14px" }}>Add Donor</Button>
+
+            <div style={{ marginTop: 14 }}>
+              <p style={{ margin: "0 0 8px", fontSize: 12, color: "#6b7f6b" }}>
+                Bulk add donors (one per line): `First Last`, or `First Last, phone`, or `First Last, phone, email`
+              </p>
+              <textarea value={bulkNames} onChange={(e) => setBulkNames(e.target.value)} placeholder={"John Doe\nJane Doe, +15085550101\nDonor Three, +15085550111, donor3@email.com"}
+                style={{ width: "100%", minHeight: 120, padding: 10, border: "1px solid #d4d9cc", borderRadius: 8, fontSize: 13, boxSizing: "border-box" }} />
+              <div style={{ marginTop: 8 }}>
+                <Button onClick={addBulkUsers} style={{ padding: "8px 14px" }}>Add List</Button>
+              </div>
+            </div>
+          </div>
+
           <div style={{ marginBottom: 16 }}>
-            <input value={searchQ} onChange={(e) => setSearchQ(e.target.value)} placeholder="Search users by name or email..."
+            <input value={searchQ} onChange={(e) => setSearchQ(e.target.value)} placeholder="Search users by name, email, or phone..."
               style={{ width: "100%", padding: "10px 14px", border: "1.5px solid #d4d9cc", borderRadius: 8, fontSize: 14, fontFamily: "'Source Serif 4', Georgia, serif", background: "#fafaf6", color: "#2d3a2d", outline: "none", boxSizing: "border-box" }} />
           </div>
           {filteredUsers.length === 0 ? (
@@ -938,7 +1099,7 @@ function AdminDashboard({ users, donations, settings, onAddDonation, onDeleteDon
                               <Input label="First Name" required value={editForm.firstName} onChange={(e) => setEditForm({ ...editForm, firstName: e.target.value })} />
                               <Input label="Last Name" required value={editForm.lastName} onChange={(e) => setEditForm({ ...editForm, lastName: e.target.value })} />
                             </div>
-                            <Input label="Email" required value={editForm.email} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} />
+                            <Input label="Email" value={editForm.email} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} />
                             <Input label="Phone" value={editForm.phone} onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })} />
                             <Input label="Street" value={editForm.street} onChange={(e) => setEditForm({ ...editForm, street: e.target.value })} />
                             <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: "0 10px" }}>
@@ -954,7 +1115,7 @@ function AdminDashboard({ users, donations, settings, onAddDonation, onDeleteDon
                         ) : (
                           <>
                             <p style={{ margin: "0 0 2px", fontSize: 16, fontWeight: 600, color: "#2d3a2d" }}>{u.firstName} {u.lastName}</p>
-                            <p style={{ margin: "0 0 4px", fontSize: 13, color: "#8a9484" }}>{u.email}{u.phone ? ` · ${u.phone}` : ""}</p>
+                            <p style={{ margin: "0 0 4px", fontSize: 13, color: "#8a9484" }}>{displayUserContact(u)}</p>
                             {u.street && <p style={{ margin: 0, fontSize: 12, color: "#a0a89a" }}>{u.street}{u.city ? `, ${u.city}` : ""}{u.state ? `, ${u.state}` : ""} {u.zip}</p>}
                           </>
                         )}
@@ -1152,6 +1313,8 @@ export default function App() {
   const [page, setPage] = useState("login");
   const [loaded, setLoaded] = useState(false);
   const [adminPin, setAdminPin] = useState("");
+  const [adminUsername, setAdminUsername] = useState("");
+  const [adminPassword, setAdminPassword] = useState("");
   const [showAdminPrompt, setShowAdminPrompt] = useState(false);
   const [adminError, setAdminError] = useState("");
 
@@ -1172,21 +1335,29 @@ export default function App() {
   }, []);
 
   const handleRegister = async (user) => {
+    const email = normalizeEmail(user.email);
+    const phone = normalizePhone(user.phone);
+    if (!email && !phone) throw new Error("Email or phone is required.");
+
     if (hasRemoteApi) {
       await registerUserAccount(user);
       const fresh = await loadData();
       const nextUsers = fresh?.users || [];
       setUsers(nextUsers);
-      const registered = nextUsers.find((u) => u.email === user.email);
+      const registered = nextUsers.find((u) => u.id === user.id || normalizeEmail(u.email) === normalizeEmail(makeUserKey(user)));
       if (registered) setCurrentUser(registered);
       setPage("dashboard");
       return;
     }
 
-    const next = [...users, user];
+    const normalizedUser = { ...user, phone, email: makeUserKey(user), role: "user" };
+    const existingIdx = users.findIndex((u) => u.id === normalizedUser.id);
+    const next = existingIdx >= 0
+      ? users.map((u, i) => (i === existingIdx ? { ...u, ...normalizedUser } : u))
+      : [...users, normalizedUser];
     setUsers(next);
     await persist(next, donations, settings);
-    setCurrentUser(user); setPage("dashboard");
+    setCurrentUser(normalizedUser); setPage("dashboard");
   };
   const handleAddDonation = async (don) => {
     const next = [...donations, don];
@@ -1211,11 +1382,35 @@ export default function App() {
     setDonations(nextDons);
     await persist(nextUsers, nextDons, settings);
   };
-  const handleUpdateUser = async (id, updates) => {
+  const handleUpdateUser = async (id, updates, addMode = false) => {
+    if (addMode) {
+      const additions = (Array.isArray(updates) ? updates : [updates]).map((u) => {
+        const idVal = u.id || generateId();
+        return {
+          ...u,
+          id: idVal,
+          phone: normalizePhone(u.phone),
+          email: makeUserKey({ ...u, id: idVal }),
+          password: u.password || "",
+          role: "user"
+        };
+      });
+      const deduped = additions.filter((candidate) => !users.some((u) => u.id === candidate.id));
+      const nextUsers = [...users, ...deduped];
+      setUsers(nextUsers);
+      await persist(nextUsers, donations, settings);
+      return;
+    }
+
     const existing = users.find((u) => u.id === id);
     if (!existing) return;
 
-    const updatedUser = { ...existing, ...updates };
+    const updatedUser = {
+      ...existing,
+      ...updates,
+      phone: normalizePhone(updates.phone ?? existing.phone),
+      email: makeUserKey({ ...existing, ...updates })
+    };
     const nextUsers = users.map((u) => (u.id === id ? updatedUser : u));
     const nextDons = existing.email !== updatedUser.email
       ? donations.map((d) => (d.email === existing.email ? { ...d, email: updatedUser.email } : d))
@@ -1232,19 +1427,48 @@ export default function App() {
   };
   const handleLogin = (user) => { setCurrentUser(user); setPage("dashboard"); };
   const handleLogout = () => {
-    window.sessionStorage.removeItem("admin_pin");
+    window.sessionStorage.removeItem("admin_token");
     setCurrentUser(null);
     setPage("login");
   };
-  const handleAdminLogin = () => {
-    if (adminPin === ADMIN_PIN) {
-      window.sessionStorage.setItem("admin_pin", adminPin);
-      setPage("admin"); setShowAdminPrompt(false); setAdminPin(""); setAdminError("");
+  const handleAdminLogin = async () => {
+    if (hasRemoteApi) {
+      try {
+        const res = await fetch(`${API_BASE_URL}/admin/login`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username: adminUsername, password: adminPassword })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.token) {
+          setAdminError(data.error || "Invalid admin credentials.");
+          return;
+        }
+        window.sessionStorage.setItem("admin_token", data.token);
+        setPage("admin");
+        setShowAdminPrompt(false);
+        setAdminUsername("");
+        setAdminPassword("");
+        setAdminError("");
+        return;
+      } catch {
+        setAdminError("Admin login failed.");
+        return;
+      }
     }
-    else setAdminError("Incorrect PIN.");
+
+    if (adminPin === ADMIN_PIN) {
+      setPage("admin");
+      setShowAdminPrompt(false);
+      setAdminPin("");
+      setAdminError("");
+      return;
+    }
+
+    setAdminError("Incorrect PIN.");
   };
   const handleAdminLogout = () => {
-    window.sessionStorage.removeItem("admin_pin");
+    window.sessionStorage.removeItem("admin_token");
     setPage("login");
   };
 
@@ -1261,13 +1485,31 @@ export default function App() {
           <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}>
             <div style={{ background: "#fafaf6", borderRadius: 14, padding: 28, maxWidth: 340, width: "90%", boxShadow: "0 20px 60px rgba(0,0,0,0.15)" }}>
               <p style={{ margin: "0 0 4px", fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#3a4a5a", textTransform: "uppercase", letterSpacing: 1.5 }}>{ORG_NAME} Admin Access</p>
-              <p style={{ margin: "0 0 16px", fontSize: 14, color: "#6b7f6b" }}>Enter the admin PIN to continue.</p>
+              <p style={{ margin: "0 0 16px", fontSize: 14, color: "#6b7f6b" }}>
+                {hasRemoteApi ? "Enter admin username and password." : "Enter the admin PIN to continue."}
+              </p>
               {adminError && <div style={{ background: "#fdf0ea", color: "#c97b5a", padding: "8px 12px", borderRadius: 6, fontSize: 13, marginBottom: 12 }}>{adminError}</div>}
-              <input type="password" value={adminPin} onChange={(e) => setAdminPin(e.target.value)} placeholder="PIN" autoFocus
-                onKeyDown={(e) => e.key === "Enter" && handleAdminLogin()}
-                style={{ width: "100%", padding: "10px 14px", border: "1.5px solid #d4d9cc", borderRadius: 8, fontSize: 18, fontFamily: "'DM Mono', monospace", background: "#fafaf6", color: "#2d3a2d", outline: "none", boxSizing: "border-box", textAlign: "center", letterSpacing: 8 }} />
+              {hasRemoteApi ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  <input type="text" value={adminUsername} onChange={(e) => setAdminUsername(e.target.value)} placeholder="Username" autoFocus
+                    style={{ width: "100%", padding: "10px 14px", border: "1.5px solid #d4d9cc", borderRadius: 8, fontSize: 14, fontFamily: "'DM Mono', monospace", background: "#fafaf6", color: "#2d3a2d", outline: "none", boxSizing: "border-box" }} />
+                  <input type="password" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} placeholder="Password"
+                    onKeyDown={(e) => e.key === "Enter" && handleAdminLogin()}
+                    style={{ width: "100%", padding: "10px 14px", border: "1.5px solid #d4d9cc", borderRadius: 8, fontSize: 14, fontFamily: "'DM Mono', monospace", background: "#fafaf6", color: "#2d3a2d", outline: "none", boxSizing: "border-box" }} />
+                </div>
+              ) : (
+                <input type="password" value={adminPin} onChange={(e) => setAdminPin(e.target.value)} placeholder="PIN" autoFocus
+                  onKeyDown={(e) => e.key === "Enter" && handleAdminLogin()}
+                  style={{ width: "100%", padding: "10px 14px", border: "1.5px solid #d4d9cc", borderRadius: 8, fontSize: 18, fontFamily: "'DM Mono', monospace", background: "#fafaf6", color: "#2d3a2d", outline: "none", boxSizing: "border-box", textAlign: "center", letterSpacing: 8 }} />
+              )}
               <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 16 }}>
-                <Button variant="ghost" onClick={() => { setShowAdminPrompt(false); setAdminPin(""); setAdminError(""); }}>Cancel</Button>
+                <Button variant="ghost" onClick={() => {
+                  setShowAdminPrompt(false);
+                  setAdminPin("");
+                  setAdminUsername("");
+                  setAdminPassword("");
+                  setAdminError("");
+                }}>Cancel</Button>
                 <Button variant="admin" onClick={handleAdminLogin}>Enter</Button>
               </div>
             </div>

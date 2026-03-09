@@ -1,5 +1,5 @@
 import { APIGatewayProxyEventV2, APIGatewayProxyStructuredResultV2 } from "aws-lambda";
-import { randomUUID } from "crypto";
+import { createHmac, timingSafeEqual, randomUUID } from "crypto";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { DeleteObjectCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
@@ -11,8 +11,11 @@ const STATE_TABLE_NAME = process.env.STATE_TABLE_NAME || "";
 const ATTACHMENTS_BUCKET_NAME = process.env.ATTACHMENTS_BUCKET_NAME || "";
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "*";
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
-const ADMIN_PIN = process.env.ADMIN_PIN || "";
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "";
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
+const ADMIN_SESSION_SECRET = process.env.ADMIN_SESSION_SECRET || "";
 const STATE_PK = "GLOBAL_STATE";
+const ADMIN_TOKEN_TTL_SECONDS = 60 * 60 * 8;
 const EXTRACTION_PROMPT = `Extract donation/payment information from this document. This could be a check image, a Venmo payment screenshot, or a payment receipt PDF.
 
 Return ONLY a JSON object with these fields (no markdown, no backticks, no explanation):
@@ -46,7 +49,7 @@ function response(statusCode: number, body: unknown): APIGatewayProxyStructuredR
       "content-type": "application/json",
       "access-control-allow-origin": ALLOWED_ORIGIN,
       "access-control-allow-methods": "GET,POST,PUT,DELETE,OPTIONS",
-      "access-control-allow-headers": "content-type"
+      "access-control-allow-headers": "content-type,authorization"
     },
     body: JSON.stringify(body)
   };
@@ -65,10 +68,44 @@ function getHeader(event: APIGatewayProxyEventV2, key: string): string {
   return event.headers?.[key] || event.headers?.[key.toLowerCase()] || "";
 }
 
+function signPayload(payload: string): string {
+  return createHmac("sha256", ADMIN_SESSION_SECRET).update(payload).digest("hex");
+}
+
+function createAdminToken(): string {
+  const payload = JSON.stringify({
+    role: "admin",
+    exp: Math.floor(Date.now() / 1000) + ADMIN_TOKEN_TTL_SECONDS
+  });
+  const encoded = Buffer.from(payload).toString("base64url");
+  const signature = signPayload(encoded);
+  return `${encoded}.${signature}`;
+}
+
+function parseAdminToken(token: string): { role: string; exp: number } | null {
+  const [encoded, signature] = token.split(".");
+  if (!encoded || !signature || !ADMIN_SESSION_SECRET) return null;
+
+  const expected = signPayload(encoded);
+  const actualBuf = Buffer.from(signature);
+  const expectedBuf = Buffer.from(expected);
+  if (actualBuf.length !== expectedBuf.length || !timingSafeEqual(actualBuf, expectedBuf)) return null;
+
+  try {
+    const parsed = JSON.parse(Buffer.from(encoded, "base64url").toString("utf-8"));
+    if (!parsed || parsed.role !== "admin" || typeof parsed.exp !== "number") return null;
+    if (parsed.exp < Math.floor(Date.now() / 1000)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
 function isAdminAuthorized(event: APIGatewayProxyEventV2): boolean {
-  if (!ADMIN_PIN) return false;
-  const pin = getHeader(event, "x-admin-pin");
-  return pin === ADMIN_PIN;
+  const auth = getHeader(event, "authorization");
+  if (!auth.toLowerCase().startsWith("bearer ")) return false;
+  const token = auth.slice(7).trim();
+  return !!parseAdminToken(token);
 }
 
 async function streamToString(stream: any): Promise<string> {
@@ -143,6 +180,20 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
       return response(200, state);
     }
 
+    if (method === "POST" && path === "/admin/login") {
+      const body = parseJsonBody(event);
+      const username = String(body.username || "").trim();
+      const password = String(body.password || "");
+      if (!ADMIN_USERNAME || !ADMIN_PASSWORD || !ADMIN_SESSION_SECRET) {
+        return response(500, { error: "Admin auth is not configured" });
+      }
+      if (username !== ADMIN_USERNAME || password !== ADMIN_PASSWORD) {
+        return response(401, { error: "Invalid admin credentials" });
+      }
+      const token = createAdminToken();
+      return response(200, { token, expiresInSeconds: ADMIN_TOKEN_TTL_SECONDS });
+    }
+
     if (method === "PUT" && path === "/state") {
       if (!isAdminAuthorized(event)) {
         return response(403, { error: "Admin authorization required" });
@@ -155,18 +206,51 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
     if (method === "POST" && path === "/register") {
       const body = parseJsonBody(event);
       const email = String(body.email || "").trim().toLowerCase();
+      const phone = String(body.phone || "").trim();
       const firstName = String(body.firstName || "").trim();
       const lastName = String(body.lastName || "").trim();
       const password = String(body.password || "");
 
-      if (!email || !firstName || !lastName || !password) {
-        return response(400, { error: "firstName, lastName, email, and password are required" });
+      if (!firstName || !lastName || !password) {
+        return response(400, { error: "firstName, lastName, and password are required" });
+      }
+      if (!email && !phone) {
+        return response(400, { error: "email or phone is required" });
       }
 
       const state = await getState();
       const users = Array.isArray(state.users) ? state.users as any[] : [];
-      if (users.some((u) => String(u.email || "").toLowerCase() === email)) {
-        return response(409, { error: "Email already registered" });
+      const requestedId = body.id ? String(body.id) : "";
+      const existingById = requestedId ? users.find((u) => String(u.id || "") === requestedId) : null;
+
+      const conflict = users.find((u) => {
+        if (existingById && u.id === existingById.id) return false;
+        if (email && String(u.email || "").toLowerCase() === email) return true;
+        if (phone && String(u.phone || "") === phone) return true;
+        return false;
+      });
+      if (conflict) {
+        return response(409, { error: "Contact is already registered" });
+      }
+
+      if (existingById) {
+        if (existingById.password) {
+          return response(409, { error: "This account is already activated" });
+        }
+        const claimedUser = {
+          ...existingById,
+          ...body,
+          id: existingById.id,
+          firstName,
+          lastName,
+          email,
+          phone,
+          password,
+          role: "user"
+        };
+        const nextUsers = users.map((u) => (u.id === existingById.id ? claimedUser : u));
+        await putState({ ...state, users: nextUsers });
+        return response(200, { user: claimedUser });
       }
 
       const newUser = {
@@ -174,7 +258,7 @@ export async function handler(event: APIGatewayProxyEventV2): Promise<APIGateway
         firstName,
         lastName,
         email,
-        phone: body.phone || "",
+        phone,
         street: body.street || "",
         city: body.city || "",
         state: body.state || "",

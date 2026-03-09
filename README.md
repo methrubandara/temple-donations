@@ -19,7 +19,7 @@ Open `http://localhost:5173`.
 
 ## Environment variables
 
-- `VITE_ADMIN_PIN`: Admin access PIN used by the frontend.
+- `VITE_ADMIN_PIN`: Local-only admin PIN fallback when not using AWS backend auth.
 - `VITE_API_BASE_URL`: AWS API Gateway base URL for centralized storage.
 - `ANTHROPIC_API_KEY`: Required for `/api/extract` document parsing endpoint.
 
@@ -43,7 +43,11 @@ Deploy it:
 cd aws-backend
 npm install
 npx cdk bootstrap
-npx cdk deploy --parameters AdminPin=2923 --parameters AnthropicApiKey=YOUR_KEY
+npx cdk deploy \
+  --parameters AdminUsername=admin \
+  --parameters AdminPassword=your_strong_password \
+  --parameters AdminSessionSecret=your_long_random_secret \
+  --parameters AnthropicApiKey=YOUR_KEY
 ```
 
 Copy `ApiBaseUrl` from stack outputs and set in frontend `.env`:
@@ -52,13 +56,13 @@ Copy `ApiBaseUrl` from stack outputs and set in frontend `.env`:
 VITE_API_BASE_URL=https://YOUR_API_ID.execute-api.YOUR_REGION.amazonaws.com
 ```
 
-Important: `VITE_ADMIN_PIN` in frontend must match the deployed AWS `AdminPin` parameter.
+Use strong values for `AdminPassword` and `AdminSessionSecret`.
 
 ## Deploy on Vercel
 
 1. Import this repo into Vercel.
 2. Set environment variables:
-   - `VITE_ADMIN_PIN`
+   - `VITE_API_BASE_URL`
    - `ANTHROPIC_API_KEY`
 3. Deploy.
 
@@ -72,7 +76,7 @@ Vercel will use:
 2. Build command: `npm run build`
 3. Publish directory: `dist`
 4. Add env vars:
-   - `VITE_ADMIN_PIN`
+   - `VITE_API_BASE_URL`
    - `ANTHROPIC_API_KEY`
 5. Deploy.
 

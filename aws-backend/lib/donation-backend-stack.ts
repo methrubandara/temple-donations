@@ -20,11 +20,21 @@ export class DonationBackendStack extends cdk.Stack {
       default: "",
       description: "Anthropic API key for document extraction endpoint (/extract). Optional."
     });
-    const adminPin = new cdk.CfnParameter(this, "AdminPin", {
+    const adminUsername = new cdk.CfnParameter(this, "AdminUsername", {
       type: "String",
       noEcho: true,
-      default: "",
-      description: "Admin PIN required for protected API mutations."
+      default: "admin",
+      description: "Admin username for secure API login."
+    });
+    const adminPassword = new cdk.CfnParameter(this, "AdminPassword", {
+      type: "String",
+      noEcho: true,
+      description: "Admin password for secure API login."
+    });
+    const adminSessionSecret = new cdk.CfnParameter(this, "AdminSessionSecret", {
+      type: "String",
+      noEcho: true,
+      description: "Secret used to sign admin session tokens."
     });
 
     const stateTable = new dynamodb.Table(this, "DonationStateTable", {
@@ -58,7 +68,9 @@ export class DonationBackendStack extends cdk.Stack {
         ATTACHMENTS_BUCKET_NAME: attachmentsBucket.bucketName,
         ALLOWED_ORIGIN: props.allowedOrigin,
         ANTHROPIC_API_KEY: anthropicApiKey.valueAsString,
-        ADMIN_PIN: adminPin.valueAsString
+        ADMIN_USERNAME: adminUsername.valueAsString,
+        ADMIN_PASSWORD: adminPassword.valueAsString,
+        ADMIN_SESSION_SECRET: adminSessionSecret.valueAsString
       }
     });
 
@@ -67,7 +79,7 @@ export class DonationBackendStack extends cdk.Stack {
 
     const httpApi = new apigwv2.HttpApi(this, "DonationHttpApi", {
       corsPreflight: {
-        allowHeaders: ["content-type"],
+        allowHeaders: ["content-type", "authorization"],
         allowMethods: [
           apigwv2.CorsHttpMethod.GET,
           apigwv2.CorsHttpMethod.POST,
