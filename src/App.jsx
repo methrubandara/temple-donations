@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 
-const DONATION_TYPES = ["Cash", "Check", "Venmo", "PayPal", "Deposit"];
+const DONATION_TYPES = ["Cash", "Check", "Direct", "Venmo", "PayPal", "Deposit"];
+const DONATION_CATEGORIES = ["Maintenance Fund", "Building Fund", "Dhamma School", "Event"];
 const ADMIN_PIN = import.meta.env.VITE_ADMIN_PIN || "1234";
 const DATA_KEY = "donation-tracker-data";
 const ATTACHMENTS_KEY = "donation-tracker-attachments";
@@ -63,6 +64,7 @@ const findUserByIdentifier = (users, identifier, password) => {
 };
 const formatCurrency = (amt) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(amt);
 const formatDate = (d) => new Date(d).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
+const formatMonth = (d) => new Date(d).toLocaleDateString("en-US", { year: "numeric", month: "long" });
 const hasRemoteApi = API_BASE_URL.length > 0;
 
 function getAdminAuthHeader() {
@@ -188,17 +190,18 @@ function generateTaxLetter(user, donations, year, templateText) {
   URL.revokeObjectURL(url);
 }
 
-function generateCSVExport(users, donations) {
-  let csv = "Date,Donor Name,Contact,Type,Reference,Amount,Has Receipt\n";
+function generateCSVExport(users, donations, filePrefix = "Donations_Export") {
+  let csv = "Date,Month,Donor Name,Contact,Type,Category,Details,Reference,Amount,Has Receipt\n";
   [...donations].sort((a, b) => new Date(b.date) - new Date(a.date)).forEach((d) => {
     const u = users.find((u) => u.email === d.email);
     const name = u ? `${u.firstName} ${u.lastName}` : d.email;
-    csv += `${d.date},"${name}","${u ? displayUserContact(u) : d.email}",${d.type},${d.checkNumber || ""},${d.amount},${d.hasAttachment ? "Yes" : "No"}\n`;
+    csv += `${d.date},"${formatMonth(d.date)}","${name}","${u ? displayUserContact(u) : d.email}",${d.type},"${d.category || ""}","${(d.details || "").replace(/"/g, "\"\"")}",${d.checkNumber || ""},${d.amount},${d.hasAttachment ? "Yes" : "No"}\n`;
   });
   const blob = new Blob([csv], { type: "text/csv" });
   const url = URL.createObjectURL(blob);
   const safeOrg = ORG_NAME.replace(/[^A-Za-z0-9]+/g, "_");
-  const a = document.createElement("a"); a.href = url; a.download = `${safeOrg}_Donations_Export_${new Date().toISOString().slice(0, 10)}.csv`; a.click();
+  const safePrefix = filePrefix.replace(/[^A-Za-z0-9_]+/g, "_");
+  const a = document.createElement("a"); a.href = url; a.download = `${safeOrg}_${safePrefix}_${new Date().toISOString().slice(0, 10)}.csv`; a.click();
   URL.revokeObjectURL(url);
 }
 
@@ -508,7 +511,15 @@ function DocumentScanner({ onExtracted, onAttachment }) {
 // ─── Donation Form (reusable for user + admin) ───
 
 function DonationForm({ users, defaultEmail, onAddDonation, showDonorSelect }) {
-  const [donForm, setDonForm] = useState({ email: defaultEmail || users[0]?.email || "", date: new Date().toISOString().slice(0, 10), type: "Cash", amount: "", checkNumber: "" });
+  const [donForm, setDonForm] = useState({
+    email: defaultEmail || getUserKey(users[0] || {}) || "",
+    date: new Date().toISOString().slice(0, 10),
+    type: "Cash",
+    category: DONATION_CATEGORIES[0],
+    amount: "",
+    checkNumber: "",
+    details: ""
+  });
   const [success, setSuccess] = useState("");
   const [pendingAttachment, setPendingAttachment] = useState(null);
 
@@ -535,6 +546,7 @@ function DonationForm({ users, defaultEmail, onAddDonation, showDonorSelect }) {
     const donId = generateId();
     const donation = {
       id: donId, email: donForm.email, date: donForm.date, type: donForm.type,
+      category: donForm.category, details: donForm.details,
       amount: amt, checkNumber: donForm.checkNumber, hasAttachment: !!pendingAttachment
     };
 
@@ -544,7 +556,7 @@ function DonationForm({ users, defaultEmail, onAddDonation, showDonorSelect }) {
     }
 
     await onAddDonation(donation);
-    setDonForm({ ...donForm, amount: "", checkNumber: "" });
+    setDonForm({ ...donForm, amount: "", checkNumber: "", details: "" });
     setPendingAttachment(null);
     setSuccess("Donation recorded with" + (pendingAttachment ? " receipt attached!" : "out receipt."));
     setTimeout(() => setSuccess(""), 3000);
@@ -573,10 +585,14 @@ function DonationForm({ users, defaultEmail, onAddDonation, showDonorSelect }) {
           {DONATION_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
         </SelectField>
       </div>
+      <SelectField label="Category" required value={donForm.category} onChange={(e) => setDonForm({ ...donForm, category: e.target.value })}>
+        {DONATION_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+      </SelectField>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 16px" }}>
         <Input label="Amount ($)" type="number" required {...df("amount")} placeholder="0.00" />
         <Input label="Check # / Reference" {...df("checkNumber")} placeholder="Optional" />
       </div>
+      <Input label="Details" {...df("details")} placeholder="Optional notes/details" />
       <Button onClick={handleAdd} style={{ width: "100%", marginTop: 4 }}>Record Donation</Button>
     </div>
   );
@@ -785,13 +801,15 @@ function UserDashboard({ user, donations, settings, onLogout }) {
             <div style={{ borderRadius: 10, overflow: "hidden", border: "1px solid #e4e8dc" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
                 <thead><tr style={{ background: "#f0f3ea" }}>
-                  {["Date", "Type", "Details", "Amount", "Receipt"].map((h) => <th key={h} style={{ padding: "10px 16px", textAlign: "left", fontFamily: "'DM Mono', monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: 1.5, color: "#6b7f6b", fontWeight: 500 }}>{h}</th>)}
+                  {["Date", "Month", "Type", "Category", "Details", "Amount", "Receipt"].map((h) => <th key={h} style={{ padding: "10px 16px", textAlign: "left", fontFamily: "'DM Mono', monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: 1.5, color: "#6b7f6b", fontWeight: 500 }}>{h}</th>)}
                 </tr></thead>
                 <tbody>{myDonations.map((d, i) => (
                   <tr key={d.id} style={{ borderTop: "1px solid #eef0e8", background: i % 2 === 0 ? "#fff" : "#fcfcf8" }}>
                     <td style={{ padding: "12px 16px", color: "#2d3a2d" }}>{formatDate(d.date)}</td>
+                    <td style={{ padding: "12px 16px", color: "#6b7f6b", fontSize: 13 }}>{formatMonth(d.date)}</td>
                     <td style={{ padding: "12px 16px" }}><Badge>{d.type}</Badge></td>
-                    <td style={{ padding: "12px 16px", color: "#8a9484", fontSize: 13 }}>{d.checkNumber ? `#${d.checkNumber}` : "—"}</td>
+                    <td style={{ padding: "12px 16px", color: "#6b7f6b", fontSize: 13 }}>{d.category || "—"}</td>
+                    <td style={{ padding: "12px 16px", color: "#8a9484", fontSize: 13 }}>{d.details || (d.checkNumber ? `#${d.checkNumber}` : "—")}</td>
                     <td style={{ padding: "12px 16px", fontFamily: "'Source Serif 4', Georgia, serif", fontWeight: 600, color: "#2d3a2d" }}>{formatCurrency(d.amount)}</td>
                     <td style={{ padding: "12px 16px" }}><ReceiptButton donationId={d.id} hasAttachment={d.hasAttachment} /></td>
                   </tr>
@@ -837,15 +855,18 @@ function AdminDashboard({ users, donations, settings, onAddDonation, onDeleteDon
   const [tab, setTab] = useState("overview");
   const [success, setSuccess] = useState("");
   const [confirm, setConfirm] = useState(null);
-  const [userFilter, setUserFilter] = useState("all");
+  const [donorSearch, setDonorSearch] = useState("");
   const [yearFilter, setYearFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
+  const [categoryFilter, setCategoryFilter] = useState("all");
   const [searchQ, setSearchQ] = useState("");
   const [editingUser, setEditingUser] = useState(null);
   const [editForm, setEditForm] = useState({});
   const [editingDonation, setEditingDonation] = useState(null);
-  const [donEditForm, setDonEditForm] = useState({ date: "", type: "Cash", amount: "", checkNumber: "" });
+  const [donEditForm, setDonEditForm] = useState({ date: "", type: "Cash", category: DONATION_CATEGORIES[0], amount: "", checkNumber: "", details: "" });
   const [templateDraft, setTemplateDraft] = useState(settings.taxTemplate || DEFAULT_TAX_TEMPLATE);
+  const [reportFromDate, setReportFromDate] = useState("");
+  const [reportToDate, setReportToDate] = useState("");
   const [newUserForm, setNewUserForm] = useState({ firstName: "", lastName: "", phone: "", email: "", street: "", city: "", state: "", zip: "" });
   const [bulkNames, setBulkNames] = useState("");
 
@@ -861,10 +882,20 @@ function AdminDashboard({ users, donations, settings, onAddDonation, onDeleteDon
   })).filter((t) => t.count > 0);
 
   const filteredDonations = donations
-    .filter((d) => userFilter === "all" || d.email === userFilter)
+    .filter((d) => {
+      if (!donorSearch.trim()) return true;
+      const u = users.find((uu) => uu.email === d.email);
+      const name = `${u?.firstName || ""} ${u?.lastName || ""}`.toLowerCase();
+      return name.includes(donorSearch.toLowerCase().trim());
+    })
     .filter((d) => yearFilter === "all" || new Date(d.date).getFullYear() === parseInt(yearFilter))
     .filter((d) => typeFilter === "all" || d.type === typeFilter)
+    .filter((d) => categoryFilter === "all" || (d.category || "") === categoryFilter)
     .sort((a, b) => new Date(b.date) - new Date(a.date));
+  const rangedDonations = donations
+    .filter((d) => !reportFromDate || new Date(d.date) >= new Date(reportFromDate))
+    .filter((d) => !reportToDate || new Date(d.date) <= new Date(`${reportToDate}T23:59:59`))
+    .sort((a, b) => new Date(a.date) - new Date(b.date));
 
   const filteredUsers = users.filter((u) => {
     if (!searchQ) return true;
@@ -889,8 +920,10 @@ function AdminDashboard({ users, donations, settings, onAddDonation, onDeleteDon
     setDonEditForm({
       date: donation.date,
       type: donation.type,
+      category: donation.category || DONATION_CATEGORIES[0],
       amount: String(donation.amount),
-      checkNumber: donation.checkNumber || ""
+      checkNumber: donation.checkNumber || "",
+      details: donation.details || ""
     });
   };
 
@@ -901,6 +934,8 @@ function AdminDashboard({ users, donations, settings, onAddDonation, onDeleteDon
     onUpdateDonation(editingDonation, {
       date: donEditForm.date,
       type: donEditForm.type,
+      category: donEditForm.category,
+      details: donEditForm.details,
       amount,
       checkNumber: donEditForm.checkNumber
     });
@@ -1145,10 +1180,8 @@ function AdminDashboard({ users, donations, settings, onAddDonation, onDeleteDon
       {tab === "donations" && (
         <div>
           <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
-            <select value={userFilter} onChange={(e) => setUserFilter(e.target.value)} style={{ padding: "6px 12px", border: "1.5px solid #d4d9cc", borderRadius: 6, fontFamily: "'DM Mono', monospace", fontSize: 12, background: "#fafaf6", color: "#2d3a2d", cursor: "pointer" }}>
-              <option value="all">All Donors</option>
-              {users.map((u) => <option key={u.id} value={u.email}>{u.firstName} {u.lastName}</option>)}
-            </select>
+            <input value={donorSearch} onChange={(e) => setDonorSearch(e.target.value)} placeholder="Donor name"
+              style={{ padding: "6px 12px", border: "1.5px solid #d4d9cc", borderRadius: 6, fontFamily: "'Source Serif 4', Georgia, serif", fontSize: 13, background: "#fafaf6", color: "#2d3a2d", minWidth: 180 }} />
             <select value={yearFilter} onChange={(e) => setYearFilter(e.target.value)} style={{ padding: "6px 12px", border: "1.5px solid #d4d9cc", borderRadius: 6, fontFamily: "'DM Mono', monospace", fontSize: 12, background: "#fafaf6", color: "#2d3a2d", cursor: "pointer" }}>
               <option value="all">All Years</option>
               {allYears.map((y) => <option key={y} value={y}>{y}</option>)}
@@ -1157,6 +1190,11 @@ function AdminDashboard({ users, donations, settings, onAddDonation, onDeleteDon
               <option value="all">All Types</option>
               {DONATION_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
             </select>
+            <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} style={{ padding: "6px 12px", border: "1.5px solid #d4d9cc", borderRadius: 6, fontFamily: "'DM Mono', monospace", fontSize: 12, background: "#fafaf6", color: "#2d3a2d", cursor: "pointer" }}>
+              <option value="all">All Categories</option>
+              {DONATION_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+            <Button variant="secondary" onClick={() => generateCSVExport(users, filteredDonations, "Filtered_Donations")}>Download Results</Button>
             <span style={{ marginLeft: "auto", fontSize: 13, color: "#6b7f6b", alignSelf: "center" }}>
               {filteredDonations.length} result{filteredDonations.length !== 1 ? "s" : ""} · {formatCurrency(filteredDonations.reduce((s, d) => s + d.amount, 0))}
             </span>
@@ -1169,7 +1207,7 @@ function AdminDashboard({ users, donations, settings, onAddDonation, onDeleteDon
               <div style={{ overflowX: "auto" }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 700 }}>
                   <thead><tr style={{ background: "#f0f3ea" }}>
-                    {["Date", "Donor", "Type", "Ref", "Amount", "Receipt", "Actions"].map((h) => <th key={h} style={{ padding: "10px 14px", textAlign: "left", fontFamily: "'DM Mono', monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: 1.5, color: "#6b7f6b", fontWeight: 500 }}>{h}</th>)}
+                    {["Date", "Month", "Donor", "Type", "Category", "Details", "Ref", "Amount", "Receipt", "Actions"].map((h) => <th key={h} style={{ padding: "10px 14px", textAlign: "left", fontFamily: "'DM Mono', monospace", fontSize: 10, textTransform: "uppercase", letterSpacing: 1.5, color: "#6b7f6b", fontWeight: 500 }}>{h}</th>)}
                   </tr></thead>
                   <tbody>{filteredDonations.map((d, i) => {
                     const u = users.find((u) => u.email === d.email);
@@ -1182,6 +1220,7 @@ function AdminDashboard({ users, donations, settings, onAddDonation, onDeleteDon
                               style={{ padding: "6px 8px", border: "1px solid #d4d9cc", borderRadius: 6, width: 130 }} />
                           ) : formatDate(d.date)}
                         </td>
+                        <td style={{ padding: "10px 14px", color: "#6b7f6b", fontSize: 12 }}>{formatMonth(d.date)}</td>
                         <td style={{ padding: "10px 14px", fontWeight: 500 }}>{u ? `${u.firstName} ${u.lastName}` : d.email}</td>
                         <td style={{ padding: "10px 14px" }}>
                           {isEditingDonation ? (
@@ -1190,6 +1229,20 @@ function AdminDashboard({ users, donations, settings, onAddDonation, onDeleteDon
                               {DONATION_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
                             </select>
                           ) : <Badge>{d.type}</Badge>}
+                        </td>
+                        <td style={{ padding: "10px 14px" }}>
+                          {isEditingDonation ? (
+                            <select value={donEditForm.category} onChange={(e) => setDonEditForm({ ...donEditForm, category: e.target.value })}
+                              style={{ padding: "6px 8px", border: "1px solid #d4d9cc", borderRadius: 6 }}>
+                              {DONATION_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                            </select>
+                          ) : <span style={{ color: "#6b7f6b", fontSize: 12 }}>{d.category || "—"}</span>}
+                        </td>
+                        <td style={{ padding: "10px 14px", color: "#8a9484", fontSize: 12 }}>
+                          {isEditingDonation ? (
+                            <input value={donEditForm.details} onChange={(e) => setDonEditForm({ ...donEditForm, details: e.target.value })}
+                              placeholder="Details" style={{ padding: "6px 8px", border: "1px solid #d4d9cc", borderRadius: 6, width: 140 }} />
+                          ) : (d.details || "—")}
                         </td>
                         <td style={{ padding: "10px 14px", color: "#8a9484" }}>
                           {isEditingDonation ? (
@@ -1270,6 +1323,20 @@ function AdminDashboard({ users, donations, settings, onAddDonation, onDeleteDon
               <Button onClick={saveTemplate}>Save Template</Button>
               <Button variant="secondary" onClick={() => setTemplateDraft(DEFAULT_TAX_TEMPLATE)}>Reset to Default</Button>
             </div>
+          </div>
+
+          <div style={{ background: "#fafaf6", borderRadius: 12, padding: 24, border: "1px solid #e8eae2", marginBottom: 20 }}>
+            <p style={{ margin: "0 0 10px", fontFamily: "'DM Mono', monospace", fontSize: 11, color: "#6b7f6b", textTransform: "uppercase", letterSpacing: 1.5 }}>Custom Time Period Report</p>
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
+              <Input label="From" type="date" value={reportFromDate} onChange={(e) => setReportFromDate(e.target.value)} />
+              <Input label="To" type="date" value={reportToDate} onChange={(e) => setReportToDate(e.target.value)} />
+            </div>
+            <p style={{ margin: "0 0 10px", fontSize: 13, color: "#6b7f6b" }}>
+              {rangedDonations.length} donation{rangedDonations.length !== 1 ? "s" : ""} · {formatCurrency(rangedDonations.reduce((s, d) => s + d.amount, 0))}
+            </p>
+            <Button variant="secondary" onClick={() => generateCSVExport(users, rangedDonations, "Custom_Period_Report")} disabled={rangedDonations.length === 0}>
+              Download Custom Report CSV
+            </Button>
           </div>
 
           <div style={{ background: "#fafaf6", borderRadius: 12, padding: 24, border: "1px solid #e8eae2" }}>
